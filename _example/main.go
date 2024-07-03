@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/sllt/go-socks5"
 	"log"
 	"os"
 )
@@ -15,4 +16,5 @@ func main() {
 	if err := server.ListenAndServe("tcp", ":10800"); err != nil {
 		panic(err)
 	}
+
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync"
 
 	"github.com/sllt/go-socks5/bufferpool"
 	"github.com/sllt/go-socks5/statute"
@@ -57,6 +58,10 @@ type Server struct {
 	userConnectHandle   func(ctx context.Context, writer io.Writer, request *Request) error
 	userBindHandle      func(ctx context.Context, writer io.Writer, request *Request) error
 	userAssociateHandle func(ctx context.Context, writer io.Writer, request *Request) error
+
+	listener net.Listener
+	quit     chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewServer creates a new Server
@@ -67,6 +72,7 @@ func NewServer(opts ...Option) *Server {
 		resolver:    DNSResolver{},
 		rules:       NewPermitAll(),
 		logger:      NewLogger(log.New(io.Discard, "socks5: ", log.LstdFlags)),
+		quit:        make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -85,39 +91,48 @@ func NewServer(opts ...Option) *Server {
 }
 
 // ListenAndServe is used to create a listener and serve on it
-func (sf *Server) ListenAndServe(ctx context.Context, network, addr string) error {
+func (sf *Server) ListenAndServe(network, addr string) error {
 	l, err := net.Listen(network, addr)
 	if err != nil {
 		return err
 	}
-	return sf.Serve(ctx, l)
+	sf.listener = l
+	sf.wg.Add(1)
+	return sf.Serve(l)
+}
+
+// Stop is used to stop the server
+func (sf *Server) Stop() {
+	close(sf.quit)
+	sf.listener.Close()
+	sf.wg.Wait()
 }
 
 // Serve is used to serve connections from a listener
-func (sf *Server) Serve(ctx context.Context, l net.Listener) error {
-	defer l.Close()
-
-	doneChan := make(chan struct{})
-	go func() {
-		<-ctx.Done()
-		close(doneChan)
-	}()
+func (sf *Server) Serve(l net.Listener) error {
+	defer sf.wg.Done()
 
 	for {
-		select {
-		case <-doneChan:
-			return nil
-		default:
-			conn, err := l.Accept()
-			if err != nil {
+
+		conn, err := l.Accept()
+		if err != nil {
+			select {
+			case <-sf.quit:
 				return err
+			default:
+				log.Println("accept error", err)
 			}
+			return err
+		} else {
+			sf.wg.Add(1)
 			sf.goFunc(func() {
 				if err := sf.ServeConn(conn); err != nil {
 					sf.logger.Errorf("server: %v", err)
 				}
 			})
+			sf.wg.Done()
 		}
+
 	}
 }
 
